@@ -13,6 +13,7 @@ Ne se connecte à aucun compte et n'achète rien.
 - **Surveillance démarrée** : premier passage, avec l'état actuel.
 - **🚨 COMMANDABLE** : le prix et le bouton « Ajouter au panier » sont apparus.
 - **Changement** : le texte de statut a changé (ex. « Commande bientôt disponible » → prix).
+- **Test OK** : uniquement sur un lancement manuel (Run workflow), avec l'état actuel. Les passages automatiques restent silencieux tant que rien ne change.
 
 ## Ajouter un article
 

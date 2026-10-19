@@ -8,6 +8,8 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0 Safari/537.36';
 const STATE_FILE = 'state.json';
 const topic = process.env.NTFY_TOPIC;
+// Manual run ("Run workflow" button): always push the current status, so a test visibly works.
+const manual = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch';
 const { items } = JSON.parse(readFileSync('watch.json', 'utf8'));
 const state = existsSync(STATE_FILE) ? JSON.parse(readFileSync(STATE_FILE, 'utf8')) : {};
 const log = (...a) => console.log(new Date().toISOString(), ...a);
@@ -71,6 +73,7 @@ for (const item of items) {
   if (r.skip) {
     failures++;
     log(`⏭ ${item.name}: ${r.skip}`);
+    if (manual) await push(`Test — ${item.name}`, `Page non lue : ${r.skip}`, item.url);
     continue;
   }
   log(`${r.orderable ? '✅' : '⏳'} ${item.name}: ${r.label}`);
@@ -80,6 +83,8 @@ for (const item of items) {
     await push(`🚨 COMMANDABLE — ${item.name}`, `${r.label} — fonce !`, item.url);
   } else if (r.label !== prev.label) {
     await push(`Changement — ${item.name}`, `${prev.label} → ${r.label}`, item.url);
+  } else if (manual) {
+    await push(`Test OK — ${item.name}`, `${r.orderable ? 'COMMANDABLE !' : r.label} (rien n'a changé)`, item.url);
   }
   state[item.url] = { orderable: r.orderable, label: r.label, at: new Date().toISOString() };
 }
