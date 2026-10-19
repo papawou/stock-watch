@@ -2,7 +2,7 @@ name: stock-watch
 
 on:
   schedule:
-    - cron: '*/10 * * * *'   # every 10 min (GitHub may start it a few minutes late)
+    - cron: '7-59/10 * * * *'   # every 10 min at :07, :17, :27… (off the busy :00 slots that GitHub often skips)
   workflow_dispatch: {}       # "Run workflow" button for a manual test
 
 concurrency:
