@@ -1,0 +1,41 @@
+name: stock-watch
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'   # every 10 min (GitHub may start it a few minutes late)
+  workflow_dispatch: {}       # "Run workflow" button for a manual test
+
+concurrency:
+  group: stock-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      # state.json = last status seen, so a push only goes out when something changes.
+      - uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: state-${{ github.run_id }}
+          restore-keys: state-
+
+      # Small random delay so the visits are not exactly every 10:00.
+      - run: sleep $((RANDOM % 90))
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: node watch.mjs
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: state.json
+          key: state-${{ github.run_id }}
