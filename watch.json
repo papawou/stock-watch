@@ -111,6 +111,39 @@
         ],
         "language": "FR"
       }
+    },
+    {
+      "name": "Amazing Toys — Pokémon 30 ans FR",
+      "shop": "shopware",
+      "base": "https://amazingtoys.ch",
+      "link": "https://amazingtoys.ch/search?search=pokemon+30th&properties=638e9690118840198fea8502366a9341",
+      "pages": [
+        "/search?search=pokemon+30th&properties=638e9690118840198fea8502366a9341",
+        "/search?search=pokemon+30th&properties=638e9690118840198fea8502366a9341&p=2"
+      ],
+      "variant": "Französisch",
+      "match": {
+        "allOf": [
+          [
+            "pokemon"
+          ],
+          [
+            "30e",
+            "30eme",
+            "30 ans",
+            "30ans",
+            "30th",
+            "upc",
+            "ultra premium",
+            "ultra-premium"
+          ]
+        ],
+        "exclude": [
+          "tournoi",
+          "ligue"
+        ],
+        "language": "FR"
+      }
     }
   ]
 }

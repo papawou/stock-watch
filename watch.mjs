@@ -8,7 +8,8 @@
 // Two kinds of watch in watch.json:
 //   "products": one product page each (400coups.ch, CS-Cart) → is THIS product orderable?
 //   "searches": product lists of a shop + keyword filter → which matching products exist, are they orderable?
-//               "shop": "prestashop" (red-line.shop), "woocommerce" (mix-image.ch) or "shopify" (poke-swiss.ch)
+//               "shop": "prestashop" (red-line.shop), "woocommerce" (mix-image.ch), "shopify" (poke-swiss.ch)
+//               or "shopware" (amazingtoys.ch: one product per page, language = variant)
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0 Safari/537.36';
@@ -34,7 +35,8 @@ class Skip extends Error {} // page not readable this time (429, 5xx, timeout): 
 
 async function get(url, accept) {
   const res = await fetch(url, {
-    headers: { 'User-Agent': UA, Accept: accept, 'Accept-Language': 'fr-CH,fr;q=0.9', 'X-Requested-With': 'XMLHttpRequest' },
+    // X-Requested-With only for JSON: PrestaShop needs it to answer in JSON, Shopware refuses it on HTML pages (403).
+    headers: { 'User-Agent': UA, Accept: accept, 'Accept-Language': 'fr-CH,fr;q=0.9', ...(accept.includes('json') && { 'X-Requested-With': 'XMLHttpRequest' }) },
     signal: AbortSignal.timeout(30_000),
   }).catch((e) => {
     throw new Skip(e.message);
@@ -167,7 +169,74 @@ async function listShopify(base, path) {
   });
 }
 
-const LISTERS = { prestashop: listPrestaShop, woocommerce: listWooCommerce, shopify: listShopify };
+// Shopware 6 (amazingtoys.ch). The search listing (already filtered on the wanted language through the
+// shop's own "Sprache" filter) shows one box per product; most products have one variant per language and
+// the box only says "Ansehen". So for each matching box the bot opens the page of the wanted-language
+// variant, found once through the shop's variant switch and then remembered in state.json.
+// On that page: schema.org availability (InStock / PreOrder / OutOfStock) + a real submit "In den Warenkorb".
+const getHtml = async (url) => (await get(url, 'text/html')).text();
+const between = (h, re) => h.match(re)?.[1];
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+const shopwareDone = new Set();
+
+function readShopwareProduct(h, url) {
+  const availability = between(h, /itemprop="availability"\s+href="https?:\/\/schema\.org\/(\w+)"/);
+  const canBuy = /<button[^>]*class="[^"]*btn-buy[^"]*"[^>]*type="submit"|<button[^>]*type="submit"[^>]*class="[^"]*btn-buy/.test(h);
+  const delivery = text(between(h, /<p class="delivery-information[^"]*">([\s\S]*?)<\/p>/) ?? '');
+  const name = text(between(h, /<h1[^>]*>([\s\S]*?)<\/h1>/) ?? '');
+  const price = between(h, /<meta[^>]*itemprop="price"[^>]*content="([\d.]+)"/);
+  return {
+    name,
+    price: price ? `${Number(price).toFixed(2)} CHF` : '?',
+    url,
+    orderable: canBuy && availability !== 'OutOfStock' && availability !== 'SoldOut',
+    status: delivery || availability || '?',
+  };
+}
+
+// Finds the URL of the variant whose option label is `option` (e.g. "Französisch") on a product page.
+async function shopwareVariantUrl(base, productUrl, option) {
+  const h = await getHtml(productUrl);
+  const re = new RegExp(`<input[^>]*name="([0-9a-f]{32})"[^>]*value="([0-9a-f]{32})"[^>]*>\\s*<label[^>]*title="${option}"`, 'i');
+  const m = h.match(re);
+  if (!m) return between(h, /<link rel="canonical" href="([^"]+)"/) ?? productUrl; // no variants: the product itself
+  const switchUrl = between(h, /&quot;url&quot;:&quot;(https?:[^&]*?\\\/switch)&quot;/)?.replace(/\\\//g, '/');
+  if (!switchUrl) throw new Skip('variante introuvable (format de page inconnu)');
+  const j = await (await get(`${switchUrl}?options=${encodeURIComponent(JSON.stringify({ [m[1]]: m[2] }))}`, 'application/json')).json();
+  return j.url;
+}
+
+async function listShopware(base, path, s) {
+  const h = await getHtml(new URL(path, base));
+  const boxes = [...h.matchAll(/data-product-information="([^"]+)"([\s\S]*?)(?=data-product-information=|<\/main>|$)/g)].map(([, info, rest]) => {
+    const p = JSON.parse(decode(info));
+    // The product link is the <a> whose class has "product-name" or "btn-detail" (attribute order varies).
+    const tag = [...rest.matchAll(/<a\s[^>]*>/g)].map((m) => m[0]).find((a) => /class="[^"]*(product-name|btn-detail)/.test(a));
+    return { id: p.id, name: decode(p.name), link: tag && decode(between(tag, /href="(https?:[^"]+)"/) ?? '') };
+  });
+  const cache = (state[`variants:${s.name}`] ??= {});
+  const products = [];
+  for (const b of boxes) {
+    // Only open the pages of boxes that already look like a match (language is checked on the variant),
+    // and each product once per pass even if it shows on several listing pages.
+    if (!b.link || !matches({ name: b.name, categories: [] }, { ...s.match, language: null })) continue;
+    if (shopwareDone.has(b.id)) continue;
+    shopwareDone.add(b.id);
+    try {
+      cache[b.id] ??= await shopwareVariantUrl(base, b.link, s.variant ?? 'Französisch');
+      await pause(500);
+      const p = readShopwareProduct(await getHtml(cache[b.id]), cache[b.id]);
+      products.push({ ...p, id: b.id, name: p.name || b.name, categories: [], language: nameLanguage(p.name || b.name) ?? s.match.language });
+    } catch (e) {
+      if (!(e instanceof Skip)) throw e;
+      log(`⏭ ${b.name}: ${e.message}`);
+      if (e.message.includes('429')) throw e; // the shop asks us to slow down: stop this shop for this pass
+    }
+  }
+  return products;
+}
+
+const LISTERS = { prestashop: listPrestaShop, woocommerce: listWooCommerce, shopify: listShopify, shopware: listShopware };
 
 // Each group is a list of words; the name must contain at least one word of EVERY group, and none of `exclude`.
 const hasWord = (name, w) => new RegExp(`(^|[^a-z0-9])${norm(w).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^a-z0-9])`).test(name);
@@ -195,7 +264,7 @@ async function watchSearch(s) {
   let read = 0;
   for (const path of s.pages) {
     try {
-      for (const p of await LISTERS[s.shop ?? 'prestashop'](s.base, path)) seen.set(p.id, p);
+      for (const p of await LISTERS[s.shop ?? 'prestashop'](s.base, path, s)) seen.set(p.id, p);
       read++;
     } catch (e) {
       if (!(e instanceof Skip)) throw e;
