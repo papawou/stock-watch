@@ -7,8 +7,8 @@
 //
 // Two kinds of watch in watch.json:
 //   "products": one product page each (400coups.ch, CS-Cart) → is THIS product orderable?
-//   "searches": product lists of a shop (red-line.shop, PrestaShop) + keyword filter
-//               → which products matching the keywords exist, and are they orderable?
+//   "searches": product lists of a shop + keyword filter → which matching products exist, are they orderable?
+//               "shop": "prestashop" (red-line.shop) or "woocommerce" (mix-image.ch)
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0 Safari/537.36';
@@ -44,7 +44,11 @@ async function get(url, accept) {
   return res;
 }
 
-const decode = (s) => s.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ');
+const decode = (s) =>
+  s
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&');
 const text = (html) => decode(html.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
 // "Pokémon 30ème" → "pokemon 30eme"
 const norm = (s) => s.normalize('NFKD').replace(/\p{Diacritic}/gu, '').toLowerCase();
@@ -94,22 +98,72 @@ async function listPrestaShop(base, path) {
     price: p.price,
     url: p.url,
     orderable: Boolean(p.add_to_cart_url),
+    status: p.add_to_cart_url ? 'commandable' : 'pas encore commandable',
+    categories: [],
+    // Red Line ends titles with "- FR" / "- ENG" / "- JPN"
+    language: decode(p.name).trim().match(/[-–]\s*(FR|ENG?|JPN?|DE|IT|ES|KR|CN)\s*$/i)?.[1].toUpperCase().replace(/^EN$/, 'ENG').replace(/^JP$/, 'JPN') ?? null,
   }));
 }
 
+// WooCommerce public Store API (no login): /wp-json/wc/store/v1/products?... → JSON product list.
+// is_purchasable && is_in_stock = the "Ajouter au panier" button works (in stock, or preorder/backorder).
+const LANGUAGE_WORDS = { FR: /fran[cç]ais|french/i, JPN: /japonais|japanese/i, ENG: /anglais|english/i, DE: /allemand|deutsch/i, CN: /chinois|chinese/i, KR: /cor[eé]en|korean/i };
+function wooLanguage(p, name) {
+  const attr = p.attributes?.find((a) => /^langue|^language/i.test(a.name))?.terms?.map((t) => t.name).join(', ');
+  if (attr) return LANGUAGE_WORDS.FR.test(attr) ? 'FR' : (Object.entries(LANGUAGE_WORDS).find(([, re]) => re.test(attr))?.[0] ?? attr);
+  // No attribute: the shop usually puts the language in the name, e.g. "(JP)", "- FR"
+  const tag = name.match(/[(\[\s-–](FR|JP|JPN|EN|ENG|DE|CN|KR)[)\]\s]*$/i)?.[1].toUpperCase();
+  if (tag) return { JP: 'JPN', EN: 'ENG' }[tag] ?? tag;
+  return Object.entries(LANGUAGE_WORDS).find(([, re]) => re.test(name))?.[0] ?? null;
+}
+
+async function listWooCommerce(base, path) {
+  const url = new URL(path, base);
+  const j = await (await get(url, 'application/json')).json();
+  return j.map((p) => {
+    const name = decode(p.name);
+    const minor = p.prices?.currency_minor_unit ?? 2;
+    const orderable = Boolean(p.is_purchasable && p.is_in_stock);
+    return {
+      id: String(p.id),
+      name,
+      price: p.prices?.price ? `${(Number(p.prices.price) / 10 ** minor).toFixed(2)} ${p.prices.currency_code ?? ''}`.trim() : '?',
+      url: p.permalink,
+      orderable,
+      status: decode(p.stock_availability?.text || '') || (orderable ? 'commandable' : 'pas encore commandable'),
+      categories: (p.categories ?? []).map((c) => c.slug),
+      language: wooLanguage(p, name),
+    };
+  });
+}
+
+const LISTERS = { prestashop: listPrestaShop, woocommerce: listWooCommerce };
+
 // Each group is a list of words; the name must contain at least one word of EVERY group, and none of `exclude`.
 const hasWord = (name, w) => new RegExp(`(^|[^a-z0-9])${norm(w).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^a-z0-9])`).test(name);
-const matches = (name, { allOf, exclude = [] }) => {
-  const n = norm(name);
-  return allOf.every((group) => group.some((w) => hasWord(n, w))) && !exclude.some((w) => hasWord(n, w));
-};
+// A product is kept when:
+//  - its name contains a word of every `allOf` group, OR it is in one of `categories` (e.g. "30th-celebration"),
+//  - and its name has none of `exclude`, and it is in none of `excludeCategories` (prefix match: "accessoires"),
+//  - and, if `language` is set, its language is that one (unknown language is kept, flagged "langue ?").
+function matches(p, { allOf, exclude = [], categories = [], excludeCategories = [], language }) {
+  const n = norm(p.name);
+  const byName = allOf.every((group) => group.some((w) => hasWord(n, w)));
+  const byCategory = p.categories.some((c) => categories.includes(c));
+  if (!byName && !byCategory) return false;
+  if (exclude.some((w) => hasWord(n, w))) return false;
+  if (p.categories.some((c) => excludeCategories.some((x) => c.startsWith(x)))) return false;
+  if (language && p.language && p.language !== language) return false;
+  return true;
+}
+const describe = (p, language) =>
+  `${p.name} — ${p.price} — ${p.status}${language && !p.language ? ' (langue ?)' : ''}`;
 
 async function watchSearch(s) {
   const seen = new Map();
   let read = 0;
   for (const path of s.pages) {
     try {
-      for (const p of await listPrestaShop(s.base, path)) seen.set(p.id, p);
+      for (const p of await LISTERS[s.shop ?? 'prestashop'](s.base, path)) seen.set(p.id, p);
       read++;
     } catch (e) {
       if (!(e instanceof Skip)) throw e;
@@ -119,9 +173,9 @@ async function watchSearch(s) {
   }
   if (!read) throw new Skip('aucune page lue');
 
-  const hits = [...seen.values()].filter((p) => matches(p.name, s.match));
+  const hits = [...seen.values()].filter((p) => matches(p, s.match));
   log(`🔎 ${s.name}: ${seen.size} produits lus, ${hits.length} correspondent`);
-  for (const p of hits) log(`   ${p.orderable ? '✅' : '⏳'} #${p.id} ${p.name} — ${p.price}`);
+  for (const p of hits) log(`   ${p.orderable ? '✅' : '⏳'} #${p.id} [${p.language ?? '??'}] ${describe(p, s.match.language)}`);
 
   const key = `search:${s.name}`;
   const first = !state[key];
@@ -129,9 +183,9 @@ async function watchSearch(s) {
   const lines = [];
   for (const p of hits) {
     const before = known[p.id];
-    if (!before && !first) await push(`🆕 ${s.name}`, `${p.name} — ${p.price} — ${p.orderable ? 'COMMANDABLE !' : 'pas encore commandable'}`, p.url);
-    else if (before && p.orderable && !before.orderable) await push(`🚨 COMMANDABLE — ${p.name}`, `${p.price} — fonce !`, p.url);
-    lines.push(`${p.orderable ? '✅' : '⏳'} ${p.name} — ${p.price}`);
+    if (!before && !first) await push(`🆕 ${s.name}${p.orderable ? ' — COMMANDABLE' : ''}`, describe(p, s.match.language), p.url);
+    else if (before && p.orderable && !before.orderable) await push(`🚨 COMMANDABLE — ${p.name}`, `${p.price} — ${p.status} — fonce !`, p.url);
+    lines.push(`${p.orderable ? '✅' : '⏳'} ${describe(p, s.match.language)}`);
   }
   if (first) await push('Surveillance démarrée', `${s.name} — ${hits.length ? lines.join(' / ') : 'aucun article pour l’instant'}`, s.link);
   else if (report) await push(`Test OK — ${s.name}`, hits.length ? lines.join(' / ') : `aucun article pour l’instant (${seen.size} produits lus)`, s.link);
