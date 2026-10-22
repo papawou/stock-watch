@@ -8,7 +8,7 @@
 // Two kinds of watch in watch.json:
 //   "products": one product page each (400coups.ch, CS-Cart) → is THIS product orderable?
 //   "searches": product lists of a shop + keyword filter → which matching products exist, are they orderable?
-//               "shop": "prestashop" (red-line.shop) or "woocommerce" (mix-image.ch)
+//               "shop": "prestashop" (red-line.shop), "woocommerce" (mix-image.ch) or "shopify" (poke-swiss.ch)
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0 Safari/537.36';
@@ -52,6 +52,20 @@ const decode = (s) =>
 const text = (html) => decode(html.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
 // "Pokémon 30ème" → "pokemon 30eme"
 const norm = (s) => s.normalize('NFKD').replace(/\p{Diacritic}/gu, '').toLowerCase();
+
+// Language from a name or a "Langue" attribute. French wins when several are listed ("FR/EN"), since a
+// bilingual product is fine for a French buyer. null = no language marker at all.
+function nameLanguage(text) {
+  const has = (codes, words) => new RegExp(`(^|[^A-Za-z])(${codes})([^A-Za-z]|$)`).test(text) || new RegExp(words).test(norm(text));
+  // Codes only count in capitals ("FR", "JP"): lowercase "de", "en"… are ordinary French words.
+  if (has('FR|VF', 'francais|french')) return 'FR';
+  if (has('JP|JPN|JAP', 'japonais|japanese')) return 'JPN';
+  if (has('EN|ENG|US|UK', 'anglais|english')) return 'ENG';
+  if (has('DE|GER', 'allemand|deutsch')) return 'DE';
+  if (has('CN|CHS|CHT', 'chinois|chinese')) return 'CN';
+  if (has('KR|KOR', 'coreen|korean')) return 'KR';
+  return null;
+}
 
 // ---------- products: one CS-Cart product page (400coups.ch) ----------
 //  - not orderable yet: the price block shows "ty-no-price" ("[Commande bientôt disponible]")
@@ -100,22 +114,15 @@ async function listPrestaShop(base, path) {
     orderable: Boolean(p.add_to_cart_url),
     status: p.add_to_cart_url ? 'commandable' : 'pas encore commandable',
     categories: [],
-    // Red Line ends titles with "- FR" / "- ENG" / "- JPN"
-    language: decode(p.name).trim().match(/[-–]\s*(FR|ENG?|JPN?|DE|IT|ES|KR|CN)\s*$/i)?.[1].toUpperCase().replace(/^EN$/, 'ENG').replace(/^JP$/, 'JPN') ?? null,
+    language: nameLanguage(decode(p.name)), // Red Line ends titles with "- FR" / "- ENG" / "- JPN"
   }));
 }
 
 // WooCommerce public Store API (no login): /wp-json/wc/store/v1/products?... → JSON product list.
 // is_purchasable && is_in_stock = the "Ajouter au panier" button works (in stock, or preorder/backorder).
-const LANGUAGE_WORDS = { FR: /fran[cç]ais|french/i, JPN: /japonais|japanese/i, ENG: /anglais|english/i, DE: /allemand|deutsch/i, CN: /chinois|chinese/i, KR: /cor[eé]en|korean/i };
-function wooLanguage(p, name) {
-  const attr = p.attributes?.find((a) => /^langue|^language/i.test(a.name))?.terms?.map((t) => t.name).join(', ');
-  if (attr) return LANGUAGE_WORDS.FR.test(attr) ? 'FR' : (Object.entries(LANGUAGE_WORDS).find(([, re]) => re.test(attr))?.[0] ?? attr);
-  // No attribute: the shop usually puts the language in the name, e.g. "(JP)", "- FR"
-  const tag = name.match(/[(\[\s-–](FR|JP|JPN|EN|ENG|DE|CN|KR)[)\]\s]*$/i)?.[1].toUpperCase();
-  if (tag) return { JP: 'JPN', EN: 'ENG' }[tag] ?? tag;
-  return Object.entries(LANGUAGE_WORDS).find(([, re]) => re.test(name))?.[0] ?? null;
-}
+const wooLanguage = (p, name) =>
+  nameLanguage(p.attributes?.find((a) => /^langue|^language/i.test(a.name))?.terms?.map((t) => t.name).join(', ') ?? '') ??
+  nameLanguage(name);
 
 async function listWooCommerce(base, path) {
   const url = new URL(path, base);
@@ -137,7 +144,30 @@ async function listWooCommerce(base, path) {
   });
 }
 
-const LISTERS = { prestashop: listPrestaShop, woocommerce: listWooCommerce };
+// Shopify public JSON: /products.json?limit=250&page=N, most recently published first. No stock count,
+// but each variant says `available` (= "Ajouter au panier" works). Single cards there carry no tags,
+// sealed products do ("Boosters", "Displays", "Coffrets…", "Elite Trainer Boxes & Tins").
+async function listShopify(base, path) {
+  const j = await (await get(new URL(path, base), 'application/json')).json();
+  return (j.products ?? []).map((p) => {
+    const name = decode(p.title);
+    const orderable = p.variants?.some((v) => v.available) ?? false;
+    const price = p.variants?.[0]?.price;
+    return {
+      id: String(p.id),
+      name,
+      price: price ? `${Number(price).toFixed(2)} CHF` : '?',
+      url: new URL(`/products/${p.handle}`, base).href,
+      orderable,
+      status: orderable ? 'commandable' : 'épuisé / pas encore commandable',
+      categories: (p.tags ?? []).map((t) => norm(t).replace(/[^a-z0-9]+/g, '-')),
+      single: !(p.tags ?? []).length,
+      language: nameLanguage(name),
+    };
+  });
+}
+
+const LISTERS = { prestashop: listPrestaShop, woocommerce: listWooCommerce, shopify: listShopify };
 
 // Each group is a list of words; the name must contain at least one word of EVERY group, and none of `exclude`.
 const hasWord = (name, w) => new RegExp(`(^|[^a-z0-9])${norm(w).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^a-z0-9])`).test(name);
@@ -156,7 +186,9 @@ function matches(p, { allOf, exclude = [], categories = [], excludeCategories = 
   return true;
 }
 const describe = (p, language) =>
-  `${p.name} — ${p.price} — ${p.status}${language && !p.language ? ' (langue ?)' : ''}`;
+  `${p.name} — ${p.price} — ${p.status}${p.single ? ' (carte à l’unité)' : ''}${language && !p.language ? ' (langue ?)' : ''}`;
+// Several lines in one push: the first ones, then "+ N autres".
+const summary = (lines, max = 8) => lines.slice(0, max).join('\n') + (lines.length > max ? `\n+ ${lines.length - max} autres` : '');
 
 async function watchSearch(s) {
   const seen = new Map();
@@ -180,15 +212,22 @@ async function watchSearch(s) {
   const key = `search:${s.name}`;
   const first = !state[key];
   const known = state[key]?.products ?? {};
-  const lines = [];
-  for (const p of hits) {
-    const before = known[p.id];
-    if (!before && !first) await push(`🆕 ${s.name}${p.orderable ? ' — COMMANDABLE' : ''}`, describe(p, s.match.language), p.url);
-    else if (before && p.orderable && !before.orderable) await push(`🚨 COMMANDABLE — ${p.name}`, `${p.price} — ${p.status} — fonce !`, p.url);
-    lines.push(`${p.orderable ? '✅' : '⏳'} ${describe(p, s.match.language)}`);
-  }
-  if (first) await push('Surveillance démarrée', `${s.name} — ${hits.length ? lines.join(' / ') : 'aucun article pour l’instant'}`, s.link);
-  else if (report) await push(`Test OK — ${s.name}`, hits.length ? lines.join(' / ') : `aucun article pour l’instant (${seen.size} produits lus)`, s.link);
+  const line = (p) => `${p.orderable ? '✅' : '⏳'} ${describe(p, s.match.language)}`;
+  const fresh = first ? [] : hits.filter((p) => !known[p.id]);
+  // Back in stock / now orderable. Single cards ("singles": "once") are only announced when they first appear.
+  const nowOrderable = hits.filter((p) => known[p.id] && p.orderable && !known[p.id].orderable && !(p.single && s.singles === 'once'));
+
+  // New products: sealed ones always get their own push; single cards are grouped when a batch arrives
+  // (e.g. 15 cards added at once), so a coffret is never buried in a list of singles.
+  const freshSingles = fresh.filter((p) => p.single);
+  const alone = freshSingles.length > 3 ? fresh.filter((p) => !p.single) : fresh;
+  for (const p of alone) await push(`🆕 ${s.name}${p.orderable ? ' — COMMANDABLE' : ''}`, describe(p, s.match.language), p.url);
+  if (freshSingles.length > 3) await push(`🆕 ${s.name} — ${freshSingles.length} nouvelles cartes à l’unité`, summary(freshSingles.map(line)), s.link);
+  for (const p of nowOrderable) await push(`🚨 COMMANDABLE — ${p.name}`, `${p.price} — ${p.status} — fonce !`, p.url);
+
+  const all = summary(hits.map(line));
+  if (first) await push('Surveillance démarrée', `${s.name}\n${hits.length ? all : 'aucun article pour l’instant'}`, s.link);
+  else if (report) await push(`Test OK — ${s.name}`, hits.length ? all : `aucun article pour l’instant (${seen.size} produits lus)`, s.link);
 
   // Products that disappeared from the lists are kept: a delisting during a drop must not re-trigger "new".
   state[key] = {

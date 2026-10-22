@@ -7,7 +7,7 @@
   ],
   "searches": [
     {
-      "name": "Red Line — Pokémon 30 ans",
+      "name": "Red Line — Pokémon 30 ans FR",
       "shop": "prestashop",
       "base": "https://www.red-line.shop",
       "link": "https://www.red-line.shop/5-pokemon",
@@ -27,9 +27,6 @@
             "30 ans",
             "30ans",
             "30th",
-            "anniversaire",
-            "anniversary",
-            "celebration",
             "upc",
             "ultra premium",
             "ultra-premium"
@@ -40,7 +37,8 @@
           "ligue",
           "local",
           "avant-premiere"
-        ]
+        ],
+        "language": "FR"
       }
     },
     {
@@ -63,9 +61,6 @@
             "30 ans",
             "30ans",
             "30th",
-            "anniversaire",
-            "anniversary",
-            "celebration",
             "upc",
             "ultra premium",
             "ultra-premium"
@@ -80,6 +75,39 @@
         ],
         "excludeCategories": [
           "accessoires"
+        ],
+        "language": "FR"
+      }
+    },
+    {
+      "name": "Poke Swiss — Pokémon 30 ans FR",
+      "shop": "shopify",
+      "base": "https://poke-swiss.ch",
+      "link": "https://poke-swiss.ch/search?type=product&q=pokemon+30ans",
+      "pages": [
+        "/products.json?limit=250&page=1",
+        "/products.json?limit=250&page=2"
+      ],
+      "singles": "once",
+      "match": {
+        "allOf": [
+          [
+            "pokemon"
+          ],
+          [
+            "30e",
+            "30eme",
+            "30 ans",
+            "30ans",
+            "30th",
+            "upc",
+            "ultra premium",
+            "ultra-premium"
+          ]
+        ],
+        "exclude": [
+          "tournoi",
+          "ligue"
         ],
         "language": "FR"
       }
