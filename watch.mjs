@@ -9,7 +9,7 @@
 //   "products": one product page each (400coups.ch, CS-Cart) → is THIS product orderable?
 //   "searches": product lists of a shop + keyword filter → which matching products exist, are they orderable?
 //               "shop": "prestashop" (red-line.shop), "woocommerce" (mix-image.ch), "shopify" (poke-swiss.ch)
-//               or "shopware" (amazingtoys.ch: one product per page, language = variant)
+//               "shopware" (amazingtoys.ch: one product per page, language = variant) or "wix" (arcbleu.shop)
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0 Safari/537.36';
@@ -149,12 +149,14 @@ async function listWooCommerce(base, path) {
 // Shopify public JSON: /products.json?limit=250&page=N, most recently published first. No stock count,
 // but each variant says `available` (= "Ajouter au panier" works). Single cards there carry no tags,
 // sealed products do ("Boosters", "Displays", "Coffrets…", "Elite Trainer Boxes & Tins").
+// Also reads the shop's search suggestions (/search/suggest.json?q=…, 10 results per query): for shops
+// whose catalogue is mostly thousands of single cards, a few targeted queries beat reading every page.
 async function listShopify(base, path) {
   const j = await (await get(new URL(path, base), 'application/json')).json();
-  return (j.products ?? []).map((p) => {
+  return (j.products ?? j.resources?.results?.products ?? []).map((p) => {
     const name = decode(p.title);
-    const orderable = p.variants?.some((v) => v.available) ?? false;
-    const price = p.variants?.[0]?.price;
+    const orderable = p.available ?? p.variants?.some((v) => v.available) ?? false;
+    const price = p.price ?? p.variants?.[0]?.price;
     return {
       id: String(p.id),
       name,
@@ -163,7 +165,7 @@ async function listShopify(base, path) {
       orderable,
       status: orderable ? 'commandable' : 'épuisé / pas encore commandable',
       categories: (p.tags ?? []).map((t) => norm(t).replace(/[^a-z0-9]+/g, '-')),
-      single: !(p.tags ?? []).length,
+      single: !(p.tags ?? []).length || (p.tags ?? []).some((t) => /carte a l.unite|single/i.test(norm(t))),
       language: nameLanguage(name),
     };
   });
@@ -236,17 +238,53 @@ async function listShopware(base, path, s) {
   return products;
 }
 
-const LISTERS = { prestashop: listPrestaShop, woocommerce: listWooCommerce, shopify: listShopify, shopware: listShopware };
+// Wix Stores (arcbleu.shop): a category page embeds its product list as JSON in the HTML, one object per product:
+//   {"id":"<uuid>","options":[{"key":"Langue",…,"selections":[{"value":"Français",…,"inStock":true},…]}],…,
+//    "price":24.9,…,"isInStock":true,"urlPart":"<slug>",…,"name":"<name>",…}
+// When a "Langue" option exists, orderable = the wanted language's selection is in stock.
+const jsonString = (s) => JSON.parse(`"${s}"`);
+async function listWix(base, path, s) {
+  const h = await getHtml(new URL(path, base));
+  const wanted = { FR: /fran[cç]ais|french/i }[s.match.language] ?? null;
+  const products = [];
+  for (const chunk of h.split(/(?=\{"id":"[0-9a-f-]{36}","options":)/).slice(1)) {
+    const stock = chunk.match(/"isInStock":(true|false),"urlPart":"((?:[^"\\]|\\.)*)"/);
+    const name = chunk.match(/"name":"((?:[^"\\]|\\.)*)"/);
+    if (!stock || !name) continue;
+    const price = chunk.match(/"price":([\d.]+)/)?.[1];
+    const langOption = chunk.match(/"key":"(?:Langue|Language|Sprache)"[\s\S]*?"selections":\[([\s\S]*?)\]\}/)?.[1] ?? '';
+    const langs = [...langOption.matchAll(/"value":"((?:[^"\\]|\\.)*)"[\s\S]*?"inStock":(true|false)/g)].map(([, v, st]) => ({ value: jsonString(v), inStock: st === 'true' }));
+    const wantedLang = wanted && langs.find((l) => wanted.test(l.value));
+    const orderable = stock[1] === 'true' && (!langs.length || !wanted || Boolean(wantedLang?.inStock));
+    const productName = jsonString(name[1]);
+    products.push({
+      id: chunk.match(/^\{"id":"([0-9a-f-]{36})"/)[1],
+      name: productName,
+      price: price ? `${Number(price).toFixed(2)} CHF` : '?',
+      url: new URL(`/product-page/${jsonString(stock[2])}`, base).href,
+      orderable,
+      status: orderable ? 'en stock' : 'rupture de stock',
+      categories: [],
+      // Language: from the "Langue" option when there is one (wanted language offered → that language), else the name.
+      language: wantedLang ? s.match.language : langs.length ? nameLanguage(langs.map((l) => l.value).join(', ')) : nameLanguage(productName),
+    });
+  }
+  return products;
+}
+
+const LISTERS = { prestashop: listPrestaShop, woocommerce: listWooCommerce, shopify: listShopify, shopware: listShopware, wix: listWix };
 
 // Each group is a list of words; the name must contain at least one word of EVERY group, and none of `exclude`.
 const hasWord = (name, w) => new RegExp(`(^|[^a-z0-9])${norm(w).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^a-z0-9])`).test(name);
 // A product is kept when:
-//  - its name contains a word of every `allOf` group, OR it is in one of `categories` (e.g. "30th-celebration"),
+//  - its name contains a word of every `allOf` group (or of every group of one `anyOf` set),
+//    OR it is in one of `categories` (e.g. "30th-celebration"),
 //  - and its name has none of `exclude`, and it is in none of `excludeCategories` (prefix match: "accessoires"),
 //  - and, if `language` is set, its language is that one (unknown language is kept, flagged "langue ?").
-function matches(p, { allOf, exclude = [], categories = [], excludeCategories = [], language }) {
+// `anyOf` = several `allOf` sets, the name may satisfy any one of them.
+function matches(p, { allOf, anyOf = [allOf], exclude = [], categories = [], excludeCategories = [], language }) {
   const n = norm(p.name);
-  const byName = allOf.every((group) => group.some((w) => hasWord(n, w)));
+  const byName = anyOf.some((set) => set.every((group) => group.some((w) => hasWord(n, w))));
   const byCategory = p.categories.some((c) => categories.includes(c));
   if (!byName && !byCategory) return false;
   if (exclude.some((w) => hasWord(n, w))) return false;

@@ -17,19 +17,39 @@
         "/recherche?s=pokemon"
       ],
       "match": {
-        "allOf": [
+        "anyOf": [
           [
-            "pokemon"
+            [
+              "pokemon"
+            ],
+            [
+              "30e",
+              "30eme",
+              "30 ans",
+              "30ans",
+              "30th"
+            ]
           ],
           [
-            "30e",
-            "30eme",
-            "30 ans",
-            "30ans",
-            "30th",
-            "upc",
-            "ultra premium",
-            "ultra-premium"
+            [
+              "pokemon"
+            ],
+            [
+              "upc",
+              "ultra premium",
+              "ultra-premium"
+            ],
+            [
+              "soiree",
+              "journee",
+              "nuit",
+              "night",
+              "day",
+              "noctali",
+              "mentali",
+              "umbreon",
+              "espeon"
+            ]
           ]
         ],
         "exclude": [
@@ -51,19 +71,39 @@
         "/wp-json/wc/store/v1/products?category=30th-celebration&per_page=100"
       ],
       "match": {
-        "allOf": [
+        "anyOf": [
           [
-            "pokemon"
+            [
+              "pokemon"
+            ],
+            [
+              "30e",
+              "30eme",
+              "30 ans",
+              "30ans",
+              "30th"
+            ]
           ],
           [
-            "30e",
-            "30eme",
-            "30 ans",
-            "30ans",
-            "30th",
-            "upc",
-            "ultra premium",
-            "ultra-premium"
+            [
+              "pokemon"
+            ],
+            [
+              "upc",
+              "ultra premium",
+              "ultra-premium"
+            ],
+            [
+              "soiree",
+              "journee",
+              "nuit",
+              "night",
+              "day",
+              "noctali",
+              "mentali",
+              "umbreon",
+              "espeon"
+            ]
           ]
         ],
         "categories": [
@@ -90,19 +130,39 @@
       ],
       "singles": "once",
       "match": {
-        "allOf": [
+        "anyOf": [
           [
-            "pokemon"
+            [
+              "pokemon"
+            ],
+            [
+              "30e",
+              "30eme",
+              "30 ans",
+              "30ans",
+              "30th"
+            ]
           ],
           [
-            "30e",
-            "30eme",
-            "30 ans",
-            "30ans",
-            "30th",
-            "upc",
-            "ultra premium",
-            "ultra-premium"
+            [
+              "pokemon"
+            ],
+            [
+              "upc",
+              "ultra premium",
+              "ultra-premium"
+            ],
+            [
+              "soiree",
+              "journee",
+              "nuit",
+              "night",
+              "day",
+              "noctali",
+              "mentali",
+              "umbreon",
+              "espeon"
+            ]
           ]
         ],
         "exclude": [
@@ -123,24 +183,201 @@
       ],
       "variant": "Französisch",
       "match": {
-        "allOf": [
+        "anyOf": [
           [
-            "pokemon"
+            [
+              "pokemon"
+            ],
+            [
+              "30e",
+              "30eme",
+              "30 ans",
+              "30ans",
+              "30th"
+            ]
           ],
           [
-            "30e",
-            "30eme",
-            "30 ans",
-            "30ans",
-            "30th",
-            "upc",
-            "ultra premium",
-            "ultra-premium"
+            [
+              "pokemon"
+            ],
+            [
+              "upc",
+              "ultra premium",
+              "ultra-premium"
+            ],
+            [
+              "soiree",
+              "journee",
+              "nuit",
+              "night",
+              "day",
+              "noctali",
+              "mentali",
+              "umbreon",
+              "espeon"
+            ]
           ]
         ],
         "exclude": [
           "tournoi",
           "ligue"
+        ],
+        "language": "FR"
+      }
+    },
+    {
+      "name": "Swiss-Pokeshop — Pokémon 30 ans FR",
+      "shop": "shopify",
+      "base": "https://swiss-pokeshop.ch",
+      "link": "https://swiss-pokeshop.ch/search?q=30%E1%B5%89+anniversaire&type=product",
+      "pages": [
+        "/search/suggest.json?q=30%E1%B5%89%20Anniversaire%20FR&resources[type]=product&resources[limit]=10&resources[options][unavailable_products]=last",
+        "/search/suggest.json?q=Coffret%2030%E1%B5%89%20Anniversaire&resources[type]=product&resources[limit]=10&resources[options][unavailable_products]=last",
+        "/search/suggest.json?q=Booster%2030%E1%B5%89%20Anniversaire&resources[type]=product&resources[limit]=10&resources[options][unavailable_products]=last",
+        "/search/suggest.json?q=Ultra-Premium%2030%E1%B5%89&resources[type]=product&resources[limit]=10&resources[options][unavailable_products]=last",
+        "/search/suggest.json?q=Display%2030%E1%B5%89%20Anniversaire&resources[type]=product&resources[limit]=10&resources[options][unavailable_products]=last",
+        "/search/suggest.json?q=Tin%2030%E1%B5%89%20Anniversaire&resources[type]=product&resources[limit]=10&resources[options][unavailable_products]=last"
+      ],
+      "match": {
+        "anyOf": [
+          [
+            [
+              "pokemon"
+            ],
+            [
+              "30e",
+              "30eme",
+              "30 ans",
+              "30ans",
+              "30th"
+            ]
+          ],
+          [
+            [
+              "pokemon"
+            ],
+            [
+              "upc",
+              "ultra premium",
+              "ultra-premium"
+            ],
+            [
+              "soiree",
+              "journee",
+              "nuit",
+              "night",
+              "day",
+              "noctali",
+              "mentali",
+              "umbreon",
+              "espeon"
+            ]
+          ]
+        ],
+        "exclude": [
+          "tournoi",
+          "ligue"
+        ],
+        "language": "FR"
+      }
+    },
+    {
+      "name": "Mighty Games — Pokémon 30 ans FR",
+      "shop": "prestashop",
+      "base": "https://www.mightygames.ch",
+      "link": "https://www.mightygames.ch/fr/457-pokemon-jeu-de-cartes",
+      "pages": [
+        "/fr/457-pokemon-jeu-de-cartes?order=product.date_add.desc",
+        "/fr/457-pokemon-jeu-de-cartes?order=product.date_add.desc&page=2"
+      ],
+      "match": {
+        "anyOf": [
+          [
+            [
+              "pokemon"
+            ],
+            [
+              "30e",
+              "30eme",
+              "30 ans",
+              "30ans",
+              "30th"
+            ]
+          ],
+          [
+            [
+              "pokemon"
+            ],
+            [
+              "upc",
+              "ultra premium",
+              "ultra-premium"
+            ],
+            [
+              "soiree",
+              "journee",
+              "nuit",
+              "night",
+              "day",
+              "noctali",
+              "mentali",
+              "umbreon",
+              "espeon"
+            ]
+          ]
+        ],
+        "exclude": [
+          "tournoi",
+          "ligue"
+        ],
+        "language": "FR"
+      }
+    },
+    {
+      "name": "Arc Bleu — Pokémon 30 ans FR",
+      "shop": "wix",
+      "base": "https://www.arcbleu.shop",
+      "link": "https://www.arcbleu.shop/category/30th-pok%C3%A9mon",
+      "pages": [
+        "/category/30th-pok%C3%A9mon",
+        "/category/pok%C3%A9mon?page=2"
+      ],
+      "match": {
+        "anyOf": [
+          [
+            [
+              "30e",
+              "30eme",
+              "30 ans",
+              "30ans",
+              "30th"
+            ]
+          ],
+          [
+            [
+              "upc",
+              "ultra premium",
+              "ultra-premium"
+            ],
+            [
+              "soiree",
+              "journee",
+              "nuit",
+              "night",
+              "day",
+              "noctali",
+              "mentali",
+              "umbreon",
+              "espeon"
+            ]
+          ]
+        ],
+        "exclude": [
+          "tournoi",
+          "ligue",
+          "one piece",
+          "magic",
+          "yu-gi-oh"
         ],
         "language": "FR"
       }
