@@ -1,9 +1,16 @@
 name: stock-watch
 
 on:
+  # Main trigger: cron-job.org calls the GitHub API every 10 min (workflow_dispatch with report=false).
+  # GitHub's own schedule is only a backup: it often skips runs, so it is kept hourly.
   schedule:
-    - cron: '7-59/10 * * * *'   # every 10 min at :07, :17, :27… (off the busy :00 slots that GitHub often skips)
-  workflow_dispatch: {}       # "Run workflow" button for a manual test
+    - cron: '37 * * * *'
+  workflow_dispatch:
+    inputs:
+      report:
+        description: 'Toujours envoyer l’état actuel (test)'
+        type: boolean
+        default: true
 
 concurrency:
   group: stock-watch
@@ -16,15 +23,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # state.json = last status seen, so a push only goes out when something changes.
+      # state.json = what was seen last time, so a push only goes out when something changes.
       - uses: actions/cache/restore@v4
         with:
           path: state.json
           key: state-${{ github.run_id }}
           restore-keys: state-
 
-      # Small random delay so the visits are not exactly every 10:00.
-      - run: sleep $((RANDOM % 90))
+      # Small random delay on unattended runs so the visits are not exactly every 10:00.
+      - if: ${{ !inputs.report }}
+        run: sleep $((RANDOM % 60))
 
       - uses: actions/setup-node@v4
         with:
@@ -33,6 +41,7 @@ jobs:
       - run: node watch.mjs
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          REPORT: ${{ inputs.report && '1' || '0' }}
 
       - uses: actions/cache/save@v4
         if: always()

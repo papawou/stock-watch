@@ -1,16 +1,21 @@
 #!/usr/bin/env node
-// Stock alert: checks each product page in watch.json once, pushes to ntfy when it becomes orderable
-// (or when its status changes), remembers the last status in state.json. Never logs in, never buys.
+// Stock alert, one pass: reads every watch in watch.json once, pushes to ntfy when something new
+// appears, becomes orderable or changes, and remembers what it saw in state.json. Never logs in, never buys.
 //
-//   NTFY_TOPIC=... node watch.mjs
+//   NTFY_TOPIC=... node watch.mjs            normal pass: push only on changes
+//   NTFY_TOPIC=... REPORT=1 node watch.mjs   test pass: always push the current status
+//
+// Two kinds of watch in watch.json:
+//   "products": one product page each (400coups.ch, CS-Cart) → is THIS product orderable?
+//   "searches": product lists of a shop (red-line.shop, PrestaShop) + keyword filter
+//               → which products matching the keywords exist, and are they orderable?
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0 Safari/537.36';
 const STATE_FILE = 'state.json';
 const topic = process.env.NTFY_TOPIC;
-// Manual run ("Run workflow" button): always push the current status, so a test visibly works.
-const manual = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch';
-const { items } = JSON.parse(readFileSync('watch.json', 'utf8'));
+const report = process.env.REPORT === '1' || process.env.REPORT === 'true';
+const config = JSON.parse(readFileSync('watch.json', 'utf8'));
 const state = existsSync(STATE_FILE) ? JSON.parse(readFileSync(STATE_FILE, 'utf8')) : {};
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
@@ -20,15 +25,31 @@ async function push(title, message, url) {
   const res = await fetch('https://ntfy.sh/', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ topic, title, message, priority: 5, click: url, tags: ['rotating_light'] }),
+    body: JSON.stringify({ topic, title, message, priority: 5, ...(url && { click: url }), tags: ['rotating_light'] }),
   }).catch((e) => ({ ok: false, status: e.message }));
   if (!res.ok) log(`⚠ ntfy push failed: ${res.status}`);
 }
 
+class Skip extends Error {} // page not readable this time (429, 5xx, timeout): try again next pass, no alert
+
+async function get(url, accept) {
+  const res = await fetch(url, {
+    headers: { 'User-Agent': UA, Accept: accept, 'Accept-Language': 'fr-CH,fr;q=0.9', 'X-Requested-With': 'XMLHttpRequest' },
+    signal: AbortSignal.timeout(30_000),
+  }).catch((e) => {
+    throw new Skip(e.message);
+  });
+  if (res.status === 429) throw new Skip('HTTP 429 (trop de requêtes)');
+  if (!res.ok) throw new Skip(`HTTP ${res.status}`);
+  return res;
+}
+
 const decode = (s) => s.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ');
 const text = (html) => decode(html.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+// "Pokémon 30ème" → "pokemon 30eme"
+const norm = (s) => s.normalize('NFKD').replace(/\p{Diacritic}/gu, '').toLowerCase();
 
-// CS-Cart product page (400coups.ch), read from the page's own markup:
+// ---------- products: one CS-Cart product page (400coups.ch) ----------
 //  - not orderable yet: the price block shows "ty-no-price" ("[Commande bientôt disponible]")
 //  - orderable: a real add-to-cart control with id="button_cart_<ID>" (class "et-in-stock") exists
 //  - sold out: no such control, the button reads "Rupture de stock" (class "et-out-of-stock")
@@ -43,50 +64,97 @@ function readCsCart(html) {
   const hasCartButton = html.includes(`id="button_cart_${id}"`);
   const soldOut = !hasCartButton && /et-out-of-stock|Rupture de stock/.test(html);
   const status = noPrice ?? (hasCartButton ? 'Ajouter au panier dispo' : soldOut ? 'Rupture de stock' : 'pas de bouton panier');
-  return {
-    orderable: !noPrice && hasCartButton,
-    label: [price && `${price} CHF`, status].filter(Boolean).join(' — '),
+  return { orderable: !noPrice && hasCartButton, label: [price && `${price} CHF`, status].filter(Boolean).join(' — ') };
+}
+
+async function watchProduct(item) {
+  const html = await (await get(item.url, 'text/html')).text();
+  const r = readCsCart(html);
+  if (!r) throw new Skip('format de page inconnu — le site a peut-être changé');
+  log(`${r.orderable ? '✅' : '⏳'} ${item.name}: ${r.label}`);
+
+  const prev = state[item.url];
+  if (!prev) await push('Surveillance démarrée', `${item.name} — ${r.orderable ? 'COMMANDABLE !' : r.label}`, item.url);
+  else if (r.orderable && !prev.orderable) await push(`🚨 COMMANDABLE — ${item.name}`, `${r.label} — fonce !`, item.url);
+  else if (r.label !== prev.label) await push(`Changement — ${item.name}`, `${prev.label} → ${r.label}`, item.url);
+  else if (report) await push(`Test OK — ${item.name}`, `${r.orderable ? 'COMMANDABLE !' : r.label} (rien n'a changé)`, item.url);
+  state[item.url] = { orderable: r.orderable, label: r.label, at: new Date().toISOString() };
+}
+
+// ---------- searches: PrestaShop product lists (red-line.shop) + keyword filter ----------
+// PrestaShop answers listing/search pages with JSON when asked with X-Requested-With: XMLHttpRequest.
+// add_to_cart_url is only filled when the product can actually be ordered.
+async function listPrestaShop(base, path) {
+  const url = new URL(path, base);
+  url.searchParams.set('resultsPerPage', '100');
+  const j = await (await get(url, 'application/json')).json();
+  return (j.products ?? []).map((p) => ({
+    id: String(p.id_product),
+    name: decode(p.name),
+    price: p.price,
+    url: p.url,
+    orderable: Boolean(p.add_to_cart_url),
+  }));
+}
+
+// Each group is a list of words; the name must contain at least one word of EVERY group, and none of `exclude`.
+const hasWord = (name, w) => new RegExp(`(^|[^a-z0-9])${norm(w).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^a-z0-9])`).test(name);
+const matches = (name, { allOf, exclude = [] }) => {
+  const n = norm(name);
+  return allOf.every((group) => group.some((w) => hasWord(n, w))) && !exclude.some((w) => hasWord(n, w));
+};
+
+async function watchSearch(s) {
+  const seen = new Map();
+  let read = 0;
+  for (const path of s.pages) {
+    try {
+      for (const p of await listPrestaShop(s.base, path)) seen.set(p.id, p);
+      read++;
+    } catch (e) {
+      if (!(e instanceof Skip)) throw e;
+      log(`⏭ ${s.name} ${path}: ${e.message}`);
+      if (e.message.includes('429')) break; // the shop asks us to slow down: stop this pass
+    }
+  }
+  if (!read) throw new Skip('aucune page lue');
+
+  const hits = [...seen.values()].filter((p) => matches(p.name, s.match));
+  log(`🔎 ${s.name}: ${seen.size} produits lus, ${hits.length} correspondent`);
+  for (const p of hits) log(`   ${p.orderable ? '✅' : '⏳'} #${p.id} ${p.name} — ${p.price}`);
+
+  const key = `search:${s.name}`;
+  const first = !state[key];
+  const known = state[key]?.products ?? {};
+  const lines = [];
+  for (const p of hits) {
+    const before = known[p.id];
+    if (!before && !first) await push(`🆕 ${s.name}`, `${p.name} — ${p.price} — ${p.orderable ? 'COMMANDABLE !' : 'pas encore commandable'}`, p.url);
+    else if (before && p.orderable && !before.orderable) await push(`🚨 COMMANDABLE — ${p.name}`, `${p.price} — fonce !`, p.url);
+    lines.push(`${p.orderable ? '✅' : '⏳'} ${p.name} — ${p.price}`);
+  }
+  if (first) await push('Surveillance démarrée', `${s.name} — ${hits.length ? lines.join(' / ') : 'aucun article pour l’instant'}`, s.link);
+  else if (report) await push(`Test OK — ${s.name}`, hits.length ? lines.join(' / ') : `aucun article pour l’instant (${seen.size} produits lus)`, s.link);
+
+  // Products that disappeared from the lists are kept: a delisting during a drop must not re-trigger "new".
+  state[key] = {
+    products: { ...known, ...Object.fromEntries(hits.map((p) => [p.id, { name: p.name, orderable: p.orderable }])) },
+    at: new Date().toISOString(),
   };
 }
 
-async function check(item) {
-  const res = await fetch(item.url, {
-    headers: { 'User-Agent': UA, Accept: 'text/html', 'Accept-Language': 'fr-CH,fr;q=0.9' },
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (res.status === 429) return { skip: 'HTTP 429 (trop de requêtes) — on réessaie au prochain passage' };
-  if (res.status === 404 || res.status === 410) return { orderable: false, label: `page introuvable (HTTP ${res.status})` };
-  if (!res.ok) return { skip: `HTTP ${res.status}` };
-  const html = await res.text();
-  return readCsCart(html) ?? { skip: 'format de page inconnu — le site a peut-être changé' };
-}
-
-let failures = 0;
-for (const item of items) {
-  let r;
+// ---------- one pass ----------
+const watches = [
+  ...(config.products ?? []).map((w) => ({ name: w.name, link: w.url, run: () => watchProduct(w) })),
+  ...(config.searches ?? []).map((w) => ({ name: w.name, link: w.link, run: () => watchSearch(w) })),
+];
+for (const w of watches) {
   try {
-    r = await check(item);
+    await w.run();
   } catch (e) {
-    r = { skip: e.message };
+    if (!(e instanceof Skip)) throw e;
+    log(`⏭ ${w.name}: ${e.message} — on réessaie au prochain passage`);
+    if (report) await push(`Test — ${w.name}`, `Page non lue : ${e.message}`, w.link);
   }
-  const prev = state[item.url];
-  if (r.skip) {
-    failures++;
-    log(`⏭ ${item.name}: ${r.skip}`);
-    if (manual) await push(`Test — ${item.name}`, `Page non lue : ${r.skip}`, item.url);
-    continue;
-  }
-  log(`${r.orderable ? '✅' : '⏳'} ${item.name}: ${r.label}`);
-  if (!prev) {
-    await push(`Surveillance démarrée`, `${item.name} — ${r.orderable ? 'COMMANDABLE !' : r.label}`, item.url);
-  } else if (r.orderable && !prev.orderable) {
-    await push(`🚨 COMMANDABLE — ${item.name}`, `${r.label} — fonce !`, item.url);
-  } else if (r.label !== prev.label) {
-    await push(`Changement — ${item.name}`, `${prev.label} → ${r.label}`, item.url);
-  } else if (manual) {
-    await push(`Test OK — ${item.name}`, `${r.orderable ? 'COMMANDABLE !' : r.label} (rien n'a changé)`, item.url);
-  }
-  state[item.url] = { orderable: r.orderable, label: r.label, at: new Date().toISOString() };
 }
 writeFileSync(STATE_FILE, JSON.stringify(state, null, 1));
-if (failures === items.length) process.exitCode = 0; // a blocked run is not an error: just wait for the next one

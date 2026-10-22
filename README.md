@@ -1,20 +1,31 @@
 # stock-watch
 
-Vérifie toutes les ~10 min si un article est commandable et envoie une notification ntfy sur le téléphone.
+Vérifie régulièrement des articles sur plusieurs boutiques et envoie une notification ntfy sur le téléphone.
 Ne se connecte à aucun compte et n'achète rien.
 
-## Mise en place
+## Ce qui est surveillé (`watch.json`)
 
-1. **Settings → Secrets and variables → Actions → New repository secret** : `NTFY_TOPIC` = le nom de ton sujet ntfy.
-2. **Actions → stock-watch → Run workflow** pour un premier test : tu dois recevoir « Surveillance démarrée ».
+- **`products`** : une page produit précise (400coups.ch). Alerte quand le prix et le bouton « Ajouter au panier » apparaissent.
+- **`searches`** : les listes de produits d'une boutique (red-line.shop) filtrées par mots-clés. Alerte quand un nouvel article correspondant apparaît, puis quand il devient commandable.
+  - `allOf` : le nom doit contenir au moins un mot de **chaque** groupe.
+  - `exclude` : aucun de ces mots (tournois, ligues…).
+
+Ajouter un article 400 Coups = une entrée dans `products` (`name` + `url`).
+
+## Déclenchement
+
+- **cron-job.org**, toutes les 10 min : `POST https://api.github.com/repos/tchappuis42/stock-watch/actions/workflows/watch.yml/dispatches`
+  - en-têtes : `Authorization: Bearer <jeton GitHub>`, `Accept: application/vnd.github+json`
+  - corps : `{"ref":"main","inputs":{"report":"false"}}`
+- **GitHub** lance aussi un passage de secours toutes les heures.
+- **Actions → stock-watch → Run workflow** : test manuel, envoie toujours l'état actuel.
+
+Secret requis : `NTFY_TOPIC` (Settings → Secrets and variables → Actions).
 
 ## Notifications
 
-- **Surveillance démarrée** : premier passage, avec l'état actuel.
-- **🚨 COMMANDABLE** : le prix et le bouton « Ajouter au panier » sont apparus.
-- **Changement** : le texte de statut a changé (ex. « Commande bientôt disponible » → prix).
-- **Test OK** : uniquement sur un lancement manuel (Run workflow), avec l'état actuel. Les passages automatiques restent silencieux tant que rien ne change.
-
-## Ajouter un article
-
-Ajoute une entrée dans `watch.json` (`name` + `url`). Pour l'instant, le script lit les pages 400coups.ch (CS-Cart).
+- **Surveillance démarrée** : premier passage d'une surveillance, avec l'état actuel.
+- **🆕** : nouvel article correspondant aux mots-clés.
+- **🚨 COMMANDABLE** : l'article peut être commandé.
+- **Changement** : le statut d'une page produit a changé.
+- **Test OK / Test — Page non lue** : uniquement sur un test manuel.
