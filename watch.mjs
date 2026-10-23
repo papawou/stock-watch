@@ -9,7 +9,8 @@
 //   "products": one product page each (400coups.ch, CS-Cart) → is THIS product orderable?
 //   "searches": product lists of a shop + keyword filter → which matching products exist, are they orderable?
 //               "shop": "prestashop" (red-line.shop), "woocommerce" (mix-image.ch), "shopify" (poke-swiss.ch)
-//               "shopware" (amazingtoys.ch: one product per page, language = variant) or "wix" (arcbleu.shop)
+//               "shopware" (amazingtoys.ch: one product per page, language = variant), "wix" (arcbleu.shop)
+//               or "cscart" (400coups.ch: search / category pages)
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0 Safari/537.36';
@@ -73,6 +74,10 @@ function nameLanguage(text) {
 //  - not orderable yet: the price block shows "ty-no-price" ("[Commande bientôt disponible]")
 //  - orderable: a real add-to-cart control with id="button_cart_<ID>" (class "et-in-stock") exists
 //  - sold out: no such control, the button reads "Rupture de stock" (class "et-out-of-stock")
+// The real add-to-cart control has id="button_cart_<ID>". Sticky bars only point at it with
+// data-ca-external-click-id="button_cart_<ID>", which must not count (it is there even when sold out).
+const cartButton = (html, id) => new RegExp(`\\sid="button_cart_${id}"`).test(html);
+
 function readCsCart(html) {
   const id = html.match(/id="price_update_(\d+)"/)?.[1];
   if (!id) return null;
@@ -81,7 +86,7 @@ function readCsCart(html) {
   const priceBlock = html.slice(start, html.indexOf(`<!--price_update_${id}-->`, start));
   const noPrice = priceBlock.match(/class="ty-no-price"[^>]*>([^<]*)</)?.[1].trim();
   const price = noPrice ? null : text(priceBlock).replace(/^(\d+) (\d{2})$/, '$1.$2') || null;
-  const hasCartButton = html.includes(`id="button_cart_${id}"`);
+  const hasCartButton = cartButton(html, id);
   const soldOut = !hasCartButton && /et-out-of-stock|Rupture de stock/.test(html);
   const status = noPrice ?? (hasCartButton ? 'Ajouter au panier dispo' : soldOut ? 'Rupture de stock' : 'pas de bouton panier');
   return { orderable: !noPrice && hasCartButton, label: [price && `${price} CHF`, status].filter(Boolean).join(' — ') };
@@ -272,7 +277,38 @@ async function listWix(base, path, s) {
   return products;
 }
 
-const LISTERS = { prestashop: listPrestaShop, woocommerce: listWooCommerce, shopify: listShopify, shopware: listShopware, wix: listWix };
+// CS-Cart listing (400coups.ch search or category page): each product box has the same price block as the
+// product page (price_update_<ID>, "ty-no-price" = "[Commande bientôt disponible]") and, when it can be
+// ordered, a real add-to-cart control id="button_cart_<ID>". Name and link: the last "product-title" before it.
+function listCsCartHtml(h, base) {
+  const byUrl = new Map();
+  for (const [, id] of h.matchAll(/id="price_update_(\d+)"/g)) {
+    const at = h.indexOf(`id="price_update_${id}"`);
+    const before = h.slice(Math.max(0, at - 8000), at);
+    const title = [...before.matchAll(/class="product-title"[^>]*>([^<]+)</g)].pop()?.[1];
+    const url = [...before.matchAll(/<a href="(https?:\/\/[^"]+\.html)"/g)].pop()?.[1];
+    if (!title || !url || byUrl.has(url)) continue;
+    const end = h.indexOf(`<!--price_update_${id}-->`, at);
+    const priceBlock = h.slice(h.indexOf('>', at) + 1, end);
+    const noPrice = priceBlock.match(/class="ty-no-price"[^>]*>([^<]*)</)?.[1].trim();
+    const price = noPrice ? null : text(priceBlock).replace(/^(\d+) (\d{2})$/, '$1.$2');
+    const hasCart = cartButton(h, id);
+    byUrl.set(url, {
+      id: url,
+      name: decode(title.trim()),
+      price: price ? `${price} CHF` : '?',
+      url,
+      orderable: !noPrice && hasCart,
+      status: noPrice ?? (hasCart ? 'Ajouter au panier dispo' : 'rupture / pas de bouton panier'),
+      categories: [],
+      language: nameLanguage(title),
+    });
+  }
+  return [...byUrl.values()];
+}
+const listCsCart = async (base, path) => listCsCartHtml(await getHtml(new URL(path, base)), base);
+
+const LISTERS = { prestashop: listPrestaShop, woocommerce: listWooCommerce, shopify: listShopify, shopware: listShopware, wix: listWix, cscart: listCsCart };
 
 // Each group is a list of words; the name must contain at least one word of EVERY group, and none of `exclude`.
 const hasWord = (name, w) => new RegExp(`(^|[^a-z0-9])${norm(w).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^a-z0-9])`).test(name);
@@ -300,7 +336,8 @@ const summary = (lines, max = 8) => lines.slice(0, max).join('\n') + (lines.leng
 async function watchSearch(s) {
   const seen = new Map();
   let read = 0;
-  for (const path of s.pages) {
+  for (const [i, path] of s.pages.entries()) {
+    if (i && s.pauseMs) await new Promise((r) => setTimeout(r, s.pauseMs)); // gentle with touchy shops (400 Coups)
     try {
       for (const p of await LISTERS[s.shop ?? 'prestashop'](s.base, path, s)) seen.set(p.id, p);
       read++;
@@ -312,6 +349,7 @@ async function watchSearch(s) {
   }
   if (!read) throw new Skip('aucune page lue');
 
+  if (s.defaultLanguage) for (const p of seen.values()) p.language ??= s.defaultLanguage;
   const hits = [...seen.values()].filter((p) => matches(p, s.match));
   log(`🔎 ${s.name}: ${seen.size} produits lus, ${hits.length} correspondent`);
   for (const p of hits) log(`   ${p.orderable ? '✅' : '⏳'} #${p.id} [${p.language ?? '??'}] ${describe(p, s.match.language)}`);

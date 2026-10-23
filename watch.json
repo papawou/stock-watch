@@ -1,11 +1,62 @@
 {
-  "products": [
-    {
-      "name": "UPC Nuit 30e anniversaire — 400 Coups",
-      "url": "https://www.400coups.ch/pokemon-coffret-ultra-premium-nuit-30eme-anniversaire.html"
-    }
-  ],
+  "products": [],
   "searches": [
+    {
+      "name": "400 Coups — Pokémon 30 ans FR",
+      "shop": "cscart",
+      "base": "https://www.400coups.ch",
+      "link": "https://www.400coups.ch/index.php?dispatch=products.search&q=pokemon+30&search_performed=Y",
+      "pages": [
+        "/index.php?dispatch=products.search&q=pokemon+30&search_performed=Y&items_per_page=96&sort_by=timestamp&sort_order=desc",
+        "/jeux-de-cartes/pokemon/?items_per_page=96&sort_by=timestamp&sort_order=desc"
+      ],
+      "pauseMs": 5000,
+      "defaultLanguage": "FR",
+      "match": {
+        "anyOf": [
+          [
+            [
+              "pokemon"
+            ],
+            [
+              "30e",
+              "30eme",
+              "30 ans",
+              "30ans",
+              "30th"
+            ]
+          ],
+          [
+            [
+              "pokemon"
+            ],
+            [
+              "upc",
+              "ultra premium",
+              "ultra-premium"
+            ],
+            [
+              "soiree",
+              "journee",
+              "nuit",
+              "night",
+              "day",
+              "noctali",
+              "mentali",
+              "umbreon",
+              "espeon"
+            ]
+          ]
+        ],
+        "exclude": [
+          "tournoi",
+          "ligue",
+          "puzzle",
+          "lego"
+        ],
+        "language": "FR"
+      }
+    },
     {
       "name": "Red Line — Pokémon 30 ans FR",
       "shop": "prestashop",
