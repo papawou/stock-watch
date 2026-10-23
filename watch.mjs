@@ -415,6 +415,7 @@ async function watchSearch(s) {
     }
   }
   if (!read) throw new Skip('aucune page lue');
+  const complete = read === s.pages.length; // every list read: a product missing from them is really gone
   if (s.shop === 'cscart' && (s.hidden?.length || s.probe)) {
     try {
       for (const p of await hiddenCsCart(s, seen)) seen.set(p.id, p);
@@ -452,9 +453,12 @@ async function watchSearch(s) {
   if (first) await push('Surveillance démarrée', `${s.name}\n${hits.length ? all : 'aucun article pour l’instant'}`, s.link);
   else if (report) await push(`Test OK — ${s.name}`, hits.length ? all : `aucun article pour l’instant (${seen.size} produits lus)`, s.link);
 
-  // Products that disappeared from the lists are kept: a delisting during a drop must not re-trigger "new".
+  // Products that disappeared from the lists are kept (a delisting during a drop must not re-trigger "new"),
+  // but marked not orderable: many shops hide sold-out products, and the restock must alert again.
+  // Only when every list was read, so a page that failed to load does not fake a sell-out.
+  const gone = complete ? Object.fromEntries(Object.entries(known).filter(([id]) => !seen.has(id)).map(([id, k]) => [id, { ...k, orderable: false }])) : {};
   state[key] = {
-    products: { ...known, ...Object.fromEntries(hits.map((p) => [p.id, { name: p.name, orderable: p.orderable, hidden: Boolean(p.hidden) }])) },
+    products: { ...known, ...gone, ...Object.fromEntries(hits.map((p) => [p.id, { name: p.name, orderable: p.orderable, hidden: Boolean(p.hidden) }])) },
     at: new Date().toISOString(),
   };
 }
