@@ -308,6 +308,73 @@ function listCsCartHtml(h, base) {
 }
 const listCsCart = async (base, path) => listCsCartHtml(await getHtml(new URL(path, base)), base);
 
+// 400 Coups creates product pages long before showing them. In CS-Cart a product is Active (listed),
+// Hidden (open by direct link but not listed — can be ordered without ever showing up!) or Disabled (404).
+// Even a 404 reveals the product's name: /index.php?dispatch=products.view&product_id=N redirects to its
+// slug ("/pokemon-mini-tin-30eme-anniversaire.html") before answering 404.
+//  - `hidden`: product ids found that way; each pass opens the ones the listings did not show.
+//  - `probe`: each pass also tries the next few ids after the highest known one, so pages created later
+//    are found too; matching ones are added to the hidden list (kept in state.json).
+async function csCartById(base, id) {
+  const res = await fetch(new URL(`/index.php?dispatch=products.view&product_id=${id}`, base), {
+    headers: { 'User-Agent': UA, Accept: 'text/html', 'Accept-Language': 'fr-CH,fr;q=0.9' },
+    signal: AbortSignal.timeout(30_000),
+  }).catch((e) => {
+    throw new Skip(e.message);
+  });
+  if (res.status === 429) throw new Skip('HTTP 429 (trop de requêtes)');
+  const url = res.url;
+  const slug = decodeURIComponent(new URL(url).pathname.replace(/^\/|\.html$/g, ''));
+  if (res.status === 404) return { url, slug, exists: !/^index\.php/.test(slug) && slug !== '', visible: false };
+  if (!res.ok) throw new Skip(`HTTP ${res.status}`);
+  const h = await res.text();
+  const r = readCsCart(h);
+  const name = text(between(h, /<h1[^>]*>([\s\S]*?)<\/h1>/) ?? '') || slug;
+  return { url, slug, exists: Boolean(r), visible: true, name, ...r };
+}
+const slugName = (slug) => slug.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+
+async function hiddenCsCart(s, seen) {
+  const key = `hidden:${s.name}`;
+  const st = (state[key] ??= { ids: [...(s.hidden ?? [])], maxId: Math.max(0, ...(s.hidden ?? []), s.probe?.from ?? 0) });
+  for (const id of s.hidden ?? []) if (!st.ids.includes(id)) st.ids.push(id);
+  const products = [];
+  const add = (id, r) =>
+    products.push({
+      id: r.url,
+      name: r.visible ? r.name : `${slugName(r.slug)} (fiche cachée)`,
+      price: r.visible && r.label.match(/^[\d.]+ CHF/)?.[0] || '?',
+      url: r.url,
+      orderable: Boolean(r.visible && r.orderable),
+      hidden: !r.visible,
+      status: r.visible ? r.label.replace(/^[\d.]+ CHF — /, '') : 'pas encore en ligne',
+      categories: [],
+      language: s.defaultLanguage ?? null,
+    });
+  const shown = new Set([...seen.values()].map((p) => p.url));
+  for (const id of st.ids) {
+    await pause(s.pauseMs ?? 2000);
+    const r = await csCartById(s.base, id);
+    if (r.exists && !shown.has(r.url)) add(id, r);
+  }
+  // New pages created since last pass: try the next few ids. Deleted ids leave gaps, so every id of the
+  // window is tried and the window then moves to the highest one that exists.
+  const from = st.maxId;
+  for (let id = from + 1; id <= from + (s.probe?.count ?? 0); id++) {
+    await pause(s.pauseMs ?? 2000);
+    const r = await csCartById(s.base, id);
+    if (!r.exists) continue;
+    st.maxId = Math.max(st.maxId, id);
+    if (st.ids.includes(id)) continue;
+    if (matches({ name: r.visible ? r.name : slugName(r.slug), categories: [] }, { ...s.match, language: null })) {
+      log(`🔍 ${s.name}: nouvelle fiche trouvée #${id} ${r.slug}`);
+      st.ids.push(id);
+      if (!shown.has(r.url)) add(id, r);
+    }
+  }
+  return products;
+}
+
 const LISTERS = { prestashop: listPrestaShop, woocommerce: listWooCommerce, shopify: listShopify, shopware: listShopware, wix: listWix, cscart: listCsCart };
 
 // Each group is a list of words; the name must contain at least one word of EVERY group, and none of `exclude`.
@@ -348,6 +415,14 @@ async function watchSearch(s) {
     }
   }
   if (!read) throw new Skip('aucune page lue');
+  if (s.shop === 'cscart' && (s.hidden?.length || s.probe)) {
+    try {
+      for (const p of await hiddenCsCart(s, seen)) seen.set(p.id, p);
+    } catch (e) {
+      if (!(e instanceof Skip)) throw e;
+      log(`⏭ ${s.name} fiches cachées: ${e.message}`);
+    }
+  }
 
   if (s.defaultLanguage) for (const p of seen.values()) p.language ??= s.defaultLanguage;
   const hits = [...seen.values()].filter((p) => matches(p, s.match));
@@ -361,6 +436,8 @@ async function watchSearch(s) {
   const fresh = first ? [] : hits.filter((p) => !known[p.id]);
   // Back in stock / now orderable. Single cards ("singles": "once") are only announced when they first appear.
   const nowOrderable = hits.filter((p) => known[p.id] && p.orderable && !known[p.id].orderable && !(p.single && s.singles === 'once'));
+  // A hidden page that went online (still not orderable): worth knowing, the drop is close.
+  const nowVisible = hits.filter((p) => known[p.id]?.hidden && !p.hidden && !p.orderable);
 
   // New products: sealed ones always get their own push; single cards are grouped when a batch arrives
   // (e.g. 15 cards added at once), so a coffret is never buried in a list of singles.
@@ -369,6 +446,7 @@ async function watchSearch(s) {
   for (const p of alone) await push(`🆕 ${s.name}${p.orderable ? ' — COMMANDABLE' : ''}`, describe(p, s.match.language), p.url);
   if (freshSingles.length > 3) await push(`🆕 ${s.name} — ${freshSingles.length} nouvelles cartes à l’unité`, summary(freshSingles.map(line)), s.link);
   for (const p of nowOrderable) await push(`🚨 COMMANDABLE — ${p.name}`, `${p.price} — ${p.status} — fonce !`, p.url);
+  for (const p of nowVisible) await push(`👀 En ligne — ${p.name}`, `La fiche est visible : ${p.price} — ${p.status}`, p.url);
 
   const all = summary(hits.map(line));
   if (first) await push('Surveillance démarrée', `${s.name}\n${hits.length ? all : 'aucun article pour l’instant'}`, s.link);
@@ -376,7 +454,7 @@ async function watchSearch(s) {
 
   // Products that disappeared from the lists are kept: a delisting during a drop must not re-trigger "new".
   state[key] = {
-    products: { ...known, ...Object.fromEntries(hits.map((p) => [p.id, { name: p.name, orderable: p.orderable }])) },
+    products: { ...known, ...Object.fromEntries(hits.map((p) => [p.id, { name: p.name, orderable: p.orderable, hidden: Boolean(p.hidden) }])) },
     at: new Date().toISOString(),
   };
 }

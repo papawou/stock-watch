@@ -10,7 +10,21 @@
         "/index.php?dispatch=products.search&q=pokemon+30&search_performed=Y&items_per_page=96&sort_by=timestamp&sort_order=desc",
         "/jeux-de-cartes/pokemon/?items_per_page=96&sort_by=timestamp&sort_order=desc"
       ],
-      "pauseMs": 5000,
+      "hidden": [
+        45246,
+        45247,
+        45250,
+        45251,
+        45252,
+        45253,
+        45254,
+        45255
+      ],
+      "probe": {
+        "from": 46036,
+        "count": 6
+      },
+      "pauseMs": 3000,
       "defaultLanguage": "FR",
       "match": {
         "anyOf": [
