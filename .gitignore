@@ -1,2 +1,4 @@
 state.json
 node_modules/
+viewer/ntfy_topic.txt
+viewer/messages_recus.txt

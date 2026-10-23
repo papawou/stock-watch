@@ -37,3 +37,7 @@ Secret requis : `NTFY_TOPIC` (Settings → Secrets and variables → Actions).
 - **🚨 COMMANDABLE** : l'article peut être commandé.
 - **Changement** : le statut d'une page produit a changé.
 - **Test OK / Test — Page non lue** : uniquement sur un test manuel.
+
+## Fenêtre sur le PC
+
+`viewer/ntfy_viewer.pyw` : petite fenêtre Windows qui affiche les notifications en direct, avec alerte quand un article devient commandable. Voir [viewer/README.md](viewer/README.md).
