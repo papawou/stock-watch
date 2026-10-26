@@ -10,7 +10,8 @@
 //   "searches": product lists of a shop + keyword filter → which matching products exist, are they orderable?
 //               "shop": "prestashop" (red-line.shop), "woocommerce" (mix-image.ch), "shopify" (poke-swiss.ch)
 //               "shopware" (amazingtoys.ch: one product per page, language = variant), "wix" (arcbleu.shop)
-//               or "cscart" (400coups.ch: search / category pages)
+//               "cscart" (400coups.ch: search / category pages), "playin" (play-in.com: product pages,
+//               online + one store's stock) or "prestashopHtml" (ludocortex.fr: plain category / search pages)
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0 Safari/537.36';
@@ -375,7 +376,62 @@ async function hiddenCsCart(s, seen) {
   return products;
 }
 
-const LISTERS = { prestashop: listPrestaShop, woocommerce: listWooCommerce, shopify: listShopify, shopware: listShopware, wix: listWix, cscart: listCsCart };
+// Play-in (Next.js). Its search runs in the browser, so the bot reads product pages directly
+// (/fr/produit/<id>/x — the slug does not matter). Each page embeds the product data:
+//   "productStores":{…"collection":[{"storeStockState":"STOCK_IN_STORE","store":{"shortName":"Annecy",…}},…]},
+//   "warehouseStockState":"OUT_OF_STOCK","releasedAt":"2026-11-27T…","transName":"<name>"
+// `pages` = product ids. `store` = the shop to watch (e.g. "Annecy"): orderable = in stock there or online.
+async function listPlayin(base, id, s) {
+  const raw = await getHtml(new URL(`/fr/produit/${id}/x`, base));
+  const h = raw.replace(/\\"/g, '"');
+  const at = h.indexOf('"productStores"');
+  if (at < 0) throw new Skip('format de page inconnu');
+  const block = h.slice(at, h.indexOf('"transName"', at));
+  const name = decode(between(h.slice(at), /"transName":"([^"]+)"/) ?? `#${id}`);
+  const online = between(block, /"warehouseStockState":"(\w+)"/) ?? '?';
+  const store = s.store ?? 'Annecy';
+  const inStore = new RegExp(`"storeStockState":"(\\w+)"[^{}]*"store":\\{[^}]*"shortName":"${store}"`).exec(block)?.[1] ?? 'OUT_OF_STOCK';
+  const release = between(block, /"releasedAt":"(\d{4}-\d\d-\d\d)/);
+  const storeOk = /STOCK_IN_STORE|IN_STOCK/.test(inStore);
+  const onlineOk = !/OUT_OF_STOCK/.test(online) && online !== '?';
+  const words = { STOCK_IN_STORE: 'en stock', OUT_OF_STOCK: 'rupture', STOCK_IN_WAREHOUSE: 'en stock' };
+  return [{
+    id: String(id),
+    name,
+    price: Number(between(raw, /"price":\s*([\d.]+)/)) ? `${Number(between(raw, /"price":\s*([\d.]+)/)).toFixed(2)} €` : '?',
+    url: new URL(`/fr/produit/${id}/x`, base).href,
+    orderable: storeOk || onlineOk,
+    status: `magasin ${store} : ${words[inStore] ?? inStore} — en ligne : ${words[online] ?? online}${release ? ` — sortie ${release.split('-').reverse().join('/')}` : ''}`,
+    categories: [],
+    language: nameLanguage(name),
+  }];
+}
+
+// PrestaShop pages read as plain HTML, for shops whose firewall refuses the JSON (XHR) listing (ludocortex.fr).
+// Each <article class="product-miniature" data-id-product="…">: link, title, price, "badge out-of-stock",
+// and an add-to-cart button that is `disabled` when it cannot be ordered.
+async function listPrestaShopHtml(base, path) {
+  const h = await getHtml(new URL(path, base));
+  return h.split(/<article class="product-miniature/).slice(1).map((chunk) => {
+    const c = chunk.slice(0, chunk.indexOf('</article>') + 1 || undefined);
+    const outOfStock = /badge out-of-stock/.test(c);
+    const button = c.match(/<button[^>]*add-to-cart[^>]*>/)?.[0] ?? '';
+    const orderable = !outOfStock && Boolean(button) && !/disabled/.test(button);
+    const name = decode(text(between(c, /class="product-title"[^>]*>([\s\S]*?)<\/h\d>/) ?? ''));
+    return {
+      id: between(c, /data-id-product="(\d+)"/),
+      name,
+      price: decode(text(between(c, /class="price"[^>]*>([\s\S]*?)<\/span>/) ?? '?')),
+      url: between(c, /<a href="([^"]+)"/),
+      orderable,
+      status: orderable ? 'commandable' : outOfStock ? 'en rupture' : 'pas commandable',
+      categories: [],
+      language: nameLanguage(name),
+    };
+  }).filter((p) => p.id && p.name);
+}
+
+const LISTERS = { prestashop: listPrestaShop, woocommerce: listWooCommerce, shopify: listShopify, shopware: listShopware, wix: listWix, cscart: listCsCart, playin: listPlayin, prestashopHtml: listPrestaShopHtml };
 
 // Each group is a list of words; the name must contain at least one word of EVERY group, and none of `exclude`.
 const hasWord = (name, w) => new RegExp(`(^|[^a-z0-9])${norm(w).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^a-z0-9])`).test(name);
