@@ -30,10 +30,6 @@ jobs:
           key: state-${{ github.run_id }}
           restore-keys: state-
 
-      # Small random delay on unattended runs so the visits are not exactly every 10:00.
-      - if: ${{ !inputs.report }}
-        run: sleep $((RANDOM % 60))
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
